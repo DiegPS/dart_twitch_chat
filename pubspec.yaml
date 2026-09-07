@@ -1,0 +1,15 @@
+name: dart_twitch_chat
+description: Anonymous, testable Twitch IRC chat client for Dart with native and global third-party emotes.
+version: 0.1.0
+repository: https://github.com/DiegPS/dart_twitch_chat
+
+environment:
+  sdk: ^3.0.0
+
+dependencies:
+  http: ^1.2.0
+  web_socket_channel: ^3.0.0
+
+dev_dependencies:
+  lints: ^3.0.0
+  test: ^1.24.0

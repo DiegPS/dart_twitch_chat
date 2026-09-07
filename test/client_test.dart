@@ -183,6 +183,51 @@ void main() {
     expect(socket.closed, isTrue);
   });
 
+  test('times out an unconfirmed JOIN and reconnects', () async {
+    final sockets = <_FakeSocket>[];
+    final client = TwitchChatClient(
+      socketFactory: (_) {
+        final socket = _FakeSocket();
+        sockets.add(socket);
+        return socket;
+      },
+      httpClient: _emptyEmoteClient(),
+      joinTimeout: const Duration(milliseconds: 5),
+      reconnectDelay: Duration.zero,
+      randomDouble: () => 0.5,
+    );
+    addTearDown(client.dispose);
+    final failures = <TwitchFailure>[];
+    client.failures.listen(failures.add);
+
+    await client.connect('channel');
+    await _eventually(() => sockets.length >= 2);
+
+    expect(sockets.first.closed, isTrue);
+    expect(
+        failures.any((failure) => failure.error is TimeoutException), isTrue);
+  });
+
+  test('a confirmed room cancels the JOIN timeout', () async {
+    final socket = _FakeSocket();
+    final client = TwitchChatClient(
+      socketFactory: (_) => socket,
+      httpClient: _emptyEmoteClient(),
+      joinTimeout: const Duration(milliseconds: 5),
+      reconnectDelay: Duration.zero,
+    );
+    addTearDown(client.dispose);
+    final failures = <TwitchFailure>[];
+    client.failures.listen(failures.add);
+
+    await client.connect('channel');
+    socket.receive('@room-id=1 :tmi.twitch.tv ROOMSTATE #channel\r\n');
+    await Future<void>.delayed(const Duration(milliseconds: 15));
+
+    expect(failures.where((failure) => failure.error is TimeoutException),
+        isEmpty);
+  });
+
   test('reconnects once after remote close without duplicate joins', () async {
     final sockets = <_FakeSocket>[];
     final client = _client((_) {

@@ -17,21 +17,30 @@ class TwitchChatClient {
     TwitchSocketFactory? socketFactory,
     http.Client? httpClient,
     Duration reconnectDelay = const Duration(seconds: 5),
+    Duration maximumReconnectDelay = const Duration(seconds: 30),
     Duration connectionTimeout = const Duration(seconds: 10),
+    Duration joinTimeout = const Duration(seconds: 15),
     Duration optionalApiTimeout = const Duration(seconds: 5),
+    double Function()? randomDouble,
   })  : _socketFactory = socketFactory ?? WebSocketChannelTwitchSocket.new,
         _httpClient = httpClient ?? http.Client(),
         _ownsHttpClient = httpClient == null,
         _reconnectDelay = reconnectDelay,
+        _maximumReconnectDelay = maximumReconnectDelay,
         _connectionTimeout = connectionTimeout,
+        _joinTimeout = joinTimeout,
+        _randomDouble = randomDouble ?? Random().nextDouble,
         _optionalApiTimeout = optionalApiTimeout;
 
   final TwitchSocketFactory _socketFactory;
   final http.Client _httpClient;
   final bool _ownsHttpClient;
   final Duration _reconnectDelay;
+  final Duration _maximumReconnectDelay;
   final Duration _connectionTimeout;
+  final Duration _joinTimeout;
   final Duration _optionalApiTimeout;
+  final double Function() _randomDouble;
 
   final _messages = StreamController<TwitchChatMessage>.broadcast();
   final _events = StreamController<TwitchEvent>.broadcast();
@@ -44,6 +53,8 @@ class TwitchChatClient {
   Map<String, TwitchEmote> _emotes = const {};
   bool _reconnectRequested = false;
   String _ircBuffer = '';
+  Timer? _joinTimer;
+  int _reconnectAttempts = 0;
 
   Stream<TwitchChatMessage> get messages => _messages.stream;
   Stream<TwitchEvent> get events => _events.stream;
@@ -61,6 +72,7 @@ class TwitchChatClient {
     }
     _emotes = const {};
     _ircBuffer = '';
+    _reconnectAttempts = 0;
     _emitConnection(TwitchConnectionState.connecting);
     try {
       await _dial(generation);
@@ -78,6 +90,7 @@ class TwitchChatClient {
   Future<void> disconnect() async {
     _generation++;
     _closed = true;
+    _joinTimer?.cancel();
     await _socket?.close();
     _socket = null;
     _emitConnection(TwitchConnectionState.idle);
@@ -116,12 +129,26 @@ class TwitchChatClient {
     socket.add('PASS oauth:anonymous\r\n');
     socket.add('NICK $nick\r\n');
     socket.add('JOIN #$_channel\r\n');
+    _startJoinTimer(socket, generation);
   }
 
   Future<void> _readLoop(int generation) async {
     while (_isCurrent(generation)) {
       final socket = _socket;
-      if (socket == null) return;
+      if (socket == null) {
+        final delay = _nextReconnectDelay();
+        if (delay > Duration.zero) await Future<void>.delayed(delay);
+        if (!_isCurrent(generation)) return;
+        _emitConnection(TwitchConnectionState.connecting);
+        try {
+          await _dial(generation);
+        } catch (error, stackTrace) {
+          if (!_isCurrent(generation)) return;
+          _report(TwitchFailureScope.connection, error, stackTrace);
+          _emitConnection(TwitchConnectionState.error, error);
+        }
+        continue;
+      }
       try {
         await for (final raw in socket.stream) {
           if (!_isCurrent(generation)) return;
@@ -145,7 +172,7 @@ class TwitchChatClient {
         }
       }
       if (!_isCurrent(generation)) return;
-      final delay = _reconnectRequested ? Duration.zero : _reconnectDelay;
+      final delay = _reconnectRequested ? Duration.zero : _nextReconnectDelay();
       _reconnectRequested = false;
       await Future<void>.delayed(delay);
       if (!_isCurrent(generation)) return;
@@ -201,10 +228,10 @@ class TwitchChatClient {
             _messages.add(notice.message);
           }
         case TwitchJoinEvent(:final channel) when channel == _channel:
-          _emitConnection(TwitchConnectionState.connected);
+          _confirmJoined();
         case TwitchRoomStateEvent(frame: final stateFrame)
             when stateFrame.channel == _channel:
-          _emitConnection(TwitchConnectionState.connected);
+          _confirmJoined();
         case TwitchCapabilityEvent(acknowledged: false):
           final error =
               StateError('Twitch rejected requested IRC capabilities.');
@@ -262,6 +289,37 @@ class TwitchChatClient {
   }
 
   bool _isCurrent(int generation) => !_closed && generation == _generation;
+
+  void _startJoinTimer(TwitchSocket socket, int generation) {
+    _joinTimer?.cancel();
+    if (_joinTimeout <= Duration.zero) return;
+    _joinTimer = Timer(_joinTimeout, () {
+      if (!_isCurrent(generation) || !identical(_socket, socket)) return;
+      final error = TimeoutException(
+        'Twitch did not confirm JOIN #$_channel.',
+        _joinTimeout,
+      );
+      _report(TwitchFailureScope.connection, error, StackTrace.current);
+      _emitConnection(TwitchConnectionState.error, error);
+      unawaited(socket.close());
+    });
+  }
+
+  void _confirmJoined() {
+    _joinTimer?.cancel();
+    _reconnectAttempts = 0;
+    _emitConnection(TwitchConnectionState.connected);
+  }
+
+  Duration _nextReconnectDelay() {
+    _reconnectAttempts++;
+    final exponential = _reconnectDelay.inMilliseconds *
+        pow(2, min(_reconnectAttempts - 1, 10));
+    final capped =
+        min(exponential.round(), _maximumReconnectDelay.inMilliseconds);
+    final jittered = (capped * (0.8 + _randomDouble() * 0.4)).round();
+    return Duration(milliseconds: jittered);
+  }
 
   void _emitConnection(TwitchConnectionState state, [Object? error]) {
     if (!_connections.isClosed) {

@@ -18,6 +18,8 @@ also preserves the complete IRC event stream for advanced consumers.
   library does not recognize yet.
 - Exact `PING`/`PONG`, fragmented-frame buffering, connection confirmation,
   automatic reconnection, timeouts, and injectable transports.
+- JOIN confirmation timeout plus capped exponential reconnect backoff with
+  jitter; a socket is not reported connected until JOIN or ROOMSTATE arrives.
 
 The client deliberately requests only `twitch.tv/tags` and
 `twitch.tv/commands`. It does **not** request `twitch.tv/membership`: chat data,

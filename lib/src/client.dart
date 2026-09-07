@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:http/http.dart' as http;
 
 import 'emotes.dart';
+import 'events.dart';
 import 'models.dart';
 import 'parser.dart';
 import 'transport.dart';
@@ -33,16 +34,19 @@ class TwitchChatClient {
   final Duration _optionalApiTimeout;
 
   final _messages = StreamController<TwitchChatMessage>.broadcast();
+  final _events = StreamController<TwitchEvent>.broadcast();
   final _connections = StreamController<TwitchConnectionUpdate>.broadcast();
   final _failures = StreamController<TwitchFailure>.broadcast();
   TwitchSocket? _socket;
-  StreamSubscription<dynamic>? _subscription;
   String _channel = '';
   bool _closed = false;
   int _generation = 0;
   Map<String, TwitchEmote> _emotes = const {};
+  bool _reconnectRequested = false;
+  String _ircBuffer = '';
 
   Stream<TwitchChatMessage> get messages => _messages.stream;
+  Stream<TwitchEvent> get events => _events.stream;
   Stream<TwitchConnectionUpdate> get connections => _connections.stream;
   Stream<TwitchFailure> get failures => _failures.stream;
   String get channel => _channel;
@@ -56,11 +60,11 @@ class TwitchChatClient {
       throw const FormatException('Twitch channel is empty.');
     }
     _emotes = const {};
+    _ircBuffer = '';
     _emitConnection(TwitchConnectionState.connecting);
     try {
       await _dial(generation);
       if (!_isCurrent(generation)) return;
-      _emitConnection(TwitchConnectionState.connected);
     } catch (error, stackTrace) {
       if (!_isCurrent(generation)) return;
       _report(TwitchFailureScope.connection, error, stackTrace);
@@ -74,8 +78,6 @@ class TwitchChatClient {
   Future<void> disconnect() async {
     _generation++;
     _closed = true;
-    await _subscription?.cancel();
-    _subscription = null;
     await _socket?.close();
     _socket = null;
     _emitConnection(TwitchConnectionState.idle);
@@ -85,6 +87,7 @@ class TwitchChatClient {
     await disconnect();
     if (_ownsHttpClient) _httpClient.close();
     await _messages.close();
+    await _events.close();
     await _connections.close();
     await _failures.close();
   }
@@ -93,6 +96,9 @@ class TwitchChatClient {
       value.trim().toLowerCase().replaceAll('#', '');
 
   Future<void> _dial(int generation) async {
+    // A partial frame belongs to the previous transport and must never be
+    // prepended to the first frame received after a reconnect.
+    _ircBuffer = '';
     final nick = 'justinfan${Random().nextInt(80000) + 1000}';
     final socket = _socketFactory(Uri.parse(_ircUrl));
     try {
@@ -139,14 +145,13 @@ class TwitchChatClient {
         }
       }
       if (!_isCurrent(generation)) return;
-      await Future<void>.delayed(_reconnectDelay);
+      final delay = _reconnectRequested ? Duration.zero : _reconnectDelay;
+      _reconnectRequested = false;
+      await Future<void>.delayed(delay);
       if (!_isCurrent(generation)) return;
       _emitConnection(TwitchConnectionState.connecting);
       try {
         await _dial(generation);
-        if (_isCurrent(generation)) {
-          _emitConnection(TwitchConnectionState.connected);
-        }
       } catch (error, stackTrace) {
         if (!_isCurrent(generation)) return;
         _report(TwitchFailureScope.connection, error, stackTrace);
@@ -156,22 +161,84 @@ class TwitchChatClient {
   }
 
   void _handleRaw(String raw) {
-    for (final line in raw.split('\r\n')) {
+    _ircBuffer += raw;
+    while (true) {
+      final delimiter = _ircBuffer.indexOf('\r\n');
+      if (delimiter < 0) return;
+      final line = _ircBuffer.substring(0, delimiter);
+      _ircBuffer = _ircBuffer.substring(delimiter + 2);
       if (line.isEmpty) continue;
       if (line.startsWith('PING')) {
-        _socket?.add('PONG :tmi.twitch.tv\r\n');
+        _socket?.add('${line.replaceFirst('PING', 'PONG')}\r\n');
         continue;
       }
-      final event = TwitchIrcParser.parse(line);
-      if (event != null && !_messages.isClosed) {
-        _messages.add(
-          TwitchMessageParser.fromEvent(
-            event,
-            thirdPartyEmotes: _emotes,
-          ),
+      final frame = TwitchIrcParser.parseFrame(line);
+      if (frame == null) {
+        _report(
+          TwitchFailureScope.protocol,
+          FormatException('Malformed Twitch IRC frame.', line),
+          StackTrace.current,
         );
+        continue;
+      }
+      late final TwitchEvent event;
+      try {
+        event = TwitchEventParser.parse(
+          frame,
+          thirdPartyEmotes: _emotes,
+        );
+      } catch (error, stackTrace) {
+        _report(TwitchFailureScope.protocol, error, stackTrace);
+        event = TwitchRawEvent(frame);
+      }
+      if (!_events.isClosed) _events.add(event);
+      switch (event) {
+        case TwitchMessageEvent(:final message):
+          if (!_messages.isClosed) _messages.add(message);
+        case TwitchUserNoticeEvent(:final notice):
+          if (_isLegacyDisplayedNotice(notice.messageType) &&
+              !_messages.isClosed) {
+            _messages.add(notice.message);
+          }
+        case TwitchJoinEvent(:final channel) when channel == _channel:
+          _emitConnection(TwitchConnectionState.connected);
+        case TwitchRoomStateEvent(frame: final stateFrame)
+            when stateFrame.channel == _channel:
+          _emitConnection(TwitchConnectionState.connected);
+        case TwitchCapabilityEvent(acknowledged: false):
+          final error =
+              StateError('Twitch rejected requested IRC capabilities.');
+          _report(TwitchFailureScope.protocol, error, StackTrace.current);
+          _emitConnection(TwitchConnectionState.error, error);
+        case TwitchNoticeEvent(:final messageId, :final message)
+            when _isFatalNotice(messageId, frame):
+          final error = StateError(message);
+          _report(TwitchFailureScope.connection, error, StackTrace.current);
+          _emitConnection(TwitchConnectionState.error, error);
+        case TwitchReconnectEvent():
+          _reconnectRequested = true;
+          final socket = _socket;
+          if (socket != null) unawaited(socket.close());
+        case TwitchPartEvent(:final channel) when channel == _channel:
+          final error = StateError('Twitch left #$channel.');
+          _report(TwitchFailureScope.connection, error, StackTrace.current);
+          _emitConnection(TwitchConnectionState.error, error);
+        default:
+          break;
       }
     }
+  }
+
+  static bool _isLegacyDisplayedNotice(String type) =>
+      const {'sub', 'resub', 'subgift', 'anonsubgift'}.contains(type);
+
+  static bool _isFatalNotice(String? messageId, TwitchIrcFrame frame) {
+    if (frame.parameters.contains('*')) return true;
+    return const {
+      'msg_banned',
+      'msg_channel_blocked',
+      'msg_channel_suspended',
+    }.contains(messageId);
   }
 
   Future<void> _loadEmotes(int generation) async {

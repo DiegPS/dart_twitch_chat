@@ -166,6 +166,7 @@ class TwitchChatMessage {
       required this.rawTags,
       required this.raw,
       this.roomId,
+      this.customRewardId,
       this.clientNonce,
       this.flags,
       this.bits,
@@ -184,6 +185,7 @@ class TwitchChatMessage {
   final Map<String, String> rawTags;
   final String raw;
   final String? roomId;
+  final String? customRewardId;
   final String? clientNonce;
   final String? flags;
   final int? bits;

@@ -240,6 +240,7 @@ class TwitchMessageParser {
       rawTags: tags,
       raw: frame.raw,
       roomId: _value(tags, 'room-id'),
+      customRewardId: _value(tags, 'custom-reward-id'),
       clientNonce: _value(tags, 'client-nonce'),
       flags: _value(tags, 'flags'),
       bits: _integer(tags, 'bits'),

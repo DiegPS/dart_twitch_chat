@@ -29,7 +29,8 @@ void main() {
       final event = _event(
         '@badge-info=subscriber/30;badges=vip/1,subscriber/24;bits=100;'
         'client-nonce=nonce;color=#123456;display-name=Ana;first-msg=1;'
-        'flags=0-2:S.7;id=m1;mod=0;returning-chatter=1;room-id=r1;'
+        'custom-reward-id=reward-42;flags=0-2:S.7;id=m1;mod=0;'
+        'returning-chatter=1;room-id=r1;'
         'subscriber=1;tmi-sent-ts=1760000000123;turbo=0;user-id=u1;'
         'user-type=staff;vip=1 :ana!ana@host PRIVMSG #channel :cheer100',
       ) as TwitchMessageEvent;
@@ -38,6 +39,7 @@ void main() {
       expect(message.timestamp,
           DateTime.fromMillisecondsSinceEpoch(1760000000123, isUtc: true));
       expect(message.roomId, 'r1');
+      expect(message.customRewardId, 'reward-42');
       expect(message.clientNonce, 'nonce');
       expect(message.flags, '0-2:S.7');
       expect(message.bits, 100);

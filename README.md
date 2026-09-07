@@ -8,7 +8,8 @@ also preserves the complete IRC event stream for advanced consumers.
 
 - Anonymous `justinfan` connections over Twitch IRC WebSocket.
 - `PRIVMSG` content with message and author IDs, server timestamps, colors,
-  badges, roles, Bits, first-message and returning-chatter flags.
+  badges, roles, Bits, first-message and returning-chatter flags, plus the
+  anonymous Channel Points `custom-reward-id` tag when Twitch sends it.
 - Native Twitch emotes, Twitch GIFs, replies, `/me` actions, shared-chat source
   data, and global BetterTTV, FrankerFaceZ, and 7TV emotes.
 - Every documented `USERNOTICE` kind and its raw `msg-param-*` values.

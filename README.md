@@ -11,7 +11,7 @@ also preserves the complete IRC event stream for advanced consumers.
   badges, roles, Bits, first-message and returning-chatter flags, plus the
   anonymous Channel Points `custom-reward-id` tag when Twitch sends it.
 - Native Twitch emotes, Twitch GIFs, replies, `/me` actions, shared-chat source
-  data, and global BetterTTV, FrankerFaceZ, and 7TV emotes.
+  data, and global plus channel BetterTTV, FrankerFaceZ, and 7TV emotes.
 - Every documented `USERNOTICE` kind and its raw `msg-param-*` values.
 - Typed deletion, timeout, ban, room-clear, room-state, notice, reconnect,
   capability, user-state, join, part, and numeric events.
@@ -128,6 +128,8 @@ scope.
 ## Optional emotes
 
 Global emotes are loaded independently from BetterTTV, FrankerFaceZ, and 7TV.
+Once anonymous IRC supplies `room-id`, the client also loads each provider's
+channel catalog. Channel entries override same-named global entries.
 Failure or malformed data from one provider never interrupts Twitch chat or
 discards results from the others. Failures appear on `failures` with the
 `TwitchFailureScope.emotes` scope.

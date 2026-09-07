@@ -11,7 +11,7 @@ import 'transport.dart';
 
 const _ircUrl = 'wss://irc-ws.chat.twitch.tv/';
 
-/// Anonymous Twitch IRC client with reconnect and global emote support.
+/// Anonymous Twitch IRC client with global and channel emote support.
 class TwitchChatClient {
   TwitchChatClient({
     TwitchSocketFactory? socketFactory,
@@ -51,6 +51,9 @@ class TwitchChatClient {
   bool _closed = false;
   int _generation = 0;
   Map<String, TwitchEmote> _emotes = const {};
+  Map<String, TwitchEmote> _globalEmotes = const {};
+  Map<String, TwitchEmote> _channelEmotes = const {};
+  String _loadedEmoteRoomId = '';
   bool _reconnectRequested = false;
   String _ircBuffer = '';
   Timer? _joinTimer;
@@ -71,6 +74,9 @@ class TwitchChatClient {
       throw const FormatException('Twitch channel is empty.');
     }
     _emotes = const {};
+    _globalEmotes = const {};
+    _channelEmotes = const {};
+    _loadedEmoteRoomId = '';
     _ircBuffer = '';
     _reconnectAttempts = 0;
     _emitConnection(TwitchConnectionState.connecting);
@@ -232,6 +238,11 @@ class TwitchChatClient {
         case TwitchRoomStateEvent(frame: final stateFrame)
             when stateFrame.channel == _channel:
           _confirmJoined();
+          final roomId = stateFrame.tags['room-id'] ?? '';
+          if (roomId.isNotEmpty && roomId != _loadedEmoteRoomId) {
+            _loadedEmoteRoomId = roomId;
+            unawaited(_loadChannelEmotes(_generation, roomId));
+          }
         case TwitchCapabilityEvent(acknowledged: false):
           final error =
               StateError('Twitch rejected requested IRC capabilities.');
@@ -280,12 +291,38 @@ class TwitchChatClient {
           }
         },
       );
-      if (_isCurrent(generation)) _emotes = loaded;
+      if (_isCurrent(generation)) {
+        _globalEmotes = loaded;
+        _mergeEmotes();
+      }
     } catch (error, stackTrace) {
       if (_isCurrent(generation)) {
         _report(TwitchFailureScope.emotes, error, stackTrace);
       }
     }
+  }
+
+  Future<void> _loadChannelEmotes(int generation, String roomId) async {
+    final loaded = await TwitchGlobalEmoteLoader(
+      httpClient: _httpClient,
+      timeout: _optionalApiTimeout,
+    ).loadChannel(
+      channelName: _channel,
+      channelId: roomId,
+      onError: (error, stackTrace) {
+        if (_isCurrent(generation) && _loadedEmoteRoomId == roomId) {
+          _report(TwitchFailureScope.emotes, error, stackTrace);
+        }
+      },
+    );
+    if (_isCurrent(generation) && _loadedEmoteRoomId == roomId) {
+      _channelEmotes = loaded;
+      _mergeEmotes();
+    }
+  }
+
+  void _mergeEmotes() {
+    _emotes = Map.unmodifiable({..._globalEmotes, ..._channelEmotes});
   }
 
   bool _isCurrent(int generation) => !_closed && generation == _generation;

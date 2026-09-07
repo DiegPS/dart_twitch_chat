@@ -60,6 +60,56 @@ void main() {
     expect(emotes, contains('Okay'));
   });
 
+  test('loads BTTV, FFZ and 7TV channel emotes anonymously', () async {
+    final requested = <Uri>[];
+    final loader = TwitchGlobalEmoteLoader(
+      httpClient: MockClient((request) async {
+        requested.add(request.url);
+        if (request.url.host == 'api.betterttv.net') {
+          return http.Response(
+            '{"channelEmotes":[{"id":"b1","code":"ChannelBTTV","imageType":"png"}],'
+            '"sharedEmotes":[{"id":"b2","code":"SharedBTTV","imageType":"gif"}]}',
+            200,
+          );
+        }
+        if (request.url.host == 'api.frankerfacez.com') {
+          return http.Response(
+            '{"sets":{"1":{"emoticons":[{"name":"ChannelFFZ",'
+            '"urls":{"1":"//cdn.ffz/one"},"animated":{"1":"//cdn.ffz/a"}}]}}}',
+            200,
+          );
+        }
+        return http.Response(
+          '{"emote_set":{"emotes":[{"id":"s1","name":"Channel7TV",'
+          '"data":{"host":{"url":"//cdn.7tv/set",'
+          '"files":[{"name":"1x.webp"}]}}}]}}',
+          200,
+        );
+      }),
+    );
+
+    final emotes = await loader.loadChannel(
+      channelName: 'SomeStreamer',
+      channelId: '1234',
+    );
+
+    expect(
+        emotes.keys,
+        containsAll(
+          ['ChannelBTTV', 'SharedBTTV', 'ChannelFFZ', 'Channel7TV'],
+        ));
+    expect(emotes['SharedBTTV']?.isAnimated, isTrue);
+    expect(emotes['ChannelFFZ']?.url, 'https://cdn.ffz/a');
+    expect(
+      requested.map((uri) => uri.toString()),
+      containsAll([
+        'https://api.betterttv.net/3/cached/users/twitch/1234',
+        'https://api.frankerfacez.com/v1/room/SomeStreamer',
+        'https://7tv.io/v3/users/twitch/1234',
+      ]),
+    );
+  });
+
   test('times out an unresponsive provider without hanging all results',
       () async {
     final errors = <Object>[];

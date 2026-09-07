@@ -1,3 +1,11 @@
+## 0.3.0
+
+- Load channel-specific BetterTTV, FrankerFaceZ, and 7TV emotes after anonymous
+  IRC exposes the room ID.
+- Keep global and channel catalogs independent so asynchronous completion
+  cannot discard either source.
+- Treat every third-party provider as optional and non-blocking.
+
 ## 0.2.0
 
 - Add a lossless IRC frame and typed event stream for every anonymous Twitch IRC command.
